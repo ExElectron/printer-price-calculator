@@ -62,10 +62,12 @@ class CalcTab(ttk.Frame):
         self.file_tree.tag_configure("ok", foreground="#1e8449")
         self.file_tree.bind("<Double-1>", self._open_coverage_tab)
 
-        right = ttk.Frame(main)
+        from .common import ScrollableFrame
+        right = ScrollableFrame(main)
         right.grid(row=0, column=1, sticky="nsw", padx=(PAD, 0))
-        self._build_options(right)
-        self._build_summary(right)
+        right.canvas.configure(width=330)
+        self._build_options(right.inner)
+        self._build_summary(right.inner)
 
         status = ttk.Frame(self)
         status.grid(row=2, column=0, sticky="ew", padx=PAD, pady=(0, PAD))
@@ -152,15 +154,67 @@ class CalcTab(ttk.Frame):
             ttk.Label(box, text=label).grid(row=index, column=0, sticky="w", padx=6, pady=2)
             ttk.Label(box, textvariable=self.summary_vars[key]).grid(
                 row=index, column=1, sticky="e", padx=6, pady=2)
-        ttk.Label(box, text="合计").grid(row=len(labels), column=0, sticky="w", padx=6, pady=(6, 4))
+        self.summary_vars["discount"] = tk.StringVar(value="—")
+        self.summary_vars["paid"] = tk.StringVar(value="—")
+        total_row = len(labels)
+        ttk.Label(box, text="应收合计").grid(row=total_row, column=0, sticky="w", padx=6, pady=(6, 4))
         ttk.Label(box, textvariable=self.summary_vars["total"], style="Total.TLabel").grid(
-            row=len(labels), column=1, sticky="e", padx=6, pady=(6, 4))
+            row=total_row, column=1, sticky="e", padx=6, pady=(6, 4))
+
+        self.discount_label = ttk.Label(box, text="优惠")
+        self.discount_value = ttk.Label(box, textvariable=self.summary_vars["discount"],
+                                        foreground="#1e8449")
+        self.paid_label = ttk.Label(box, text="实收金额")
+        self.paid_value = ttk.Label(box, textvariable=self.summary_vars["paid"])
+        self.discount_label.grid(row=total_row + 1, column=0, sticky="w", padx=6, pady=(0, 4))
+        self.discount_value.grid(row=total_row + 1, column=1, sticky="e", padx=6, pady=(0, 4))
+        self.paid_label.grid(row=total_row + 2, column=0, sticky="w", padx=6, pady=(0, 4))
+        self.paid_value.grid(row=total_row + 2, column=1, sticky="e", padx=6, pady=(0, 4))
         box.columnconfigure(1, weight=1)
 
         self.notes_text = tk.Text(parent, height=7, width=34, wrap="word", relief="flat",
                                   background="#f5f6f8", highlightthickness=0)
         self.notes_text.pack(fill="x", pady=(6, 0))
         self.notes_text.configure(state="disabled")
+
+        self._build_payment(parent)
+
+    # ------------------------------------------------------------------
+    def _build_payment(self, parent):
+        box = ttk.LabelFrame(parent, text="实收金额（打印完成后填写）")
+        box.pack(fill="x", pady=(6, 0))
+        row = ttk.Frame(box)
+        row.pack(fill="x", padx=6, pady=(6, 2))
+        ttk.Label(row, text="实收金额").pack(side="left")
+        self.paid_var = tk.StringVar(value="")
+        entry = ttk.Entry(row, textvariable=self.paid_var, width=12)
+        entry.pack(side="left", padx=6)
+        ttk.Label(row, text="元").pack(side="left")
+        ttk.Button(row, text="清零", width=6, command=self.clear_paid).pack(side="right")
+        ttk.Label(box, text="填写后自动计算优惠，并同步到报价汇总与导出的报价单",
+                  style="Hint.TLabel", wraplength=250, justify="left").pack(
+            fill="x", padx=6, pady=(0, 6))
+        self.paid_var.trace_add("write", lambda *_a: self.update_payment())
+
+    def clear_paid(self):
+        self.paid_var.set("")
+
+    def paid_amount(self):
+        text = (self.paid_var.get() or "").strip().replace("，", "").replace(",", "")
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    def _toggle_payment_rows(self, show):
+        widgets = (self.discount_label, self.discount_value, self.paid_label, self.paid_value)
+        for widget in widgets:
+            if show:
+                widget.grid()
+            else:
+                widget.grid_remove()
 
     # ------------------------------------------------------------------
     def update_engine_hint(self):
@@ -375,8 +429,7 @@ class CalcTab(ttk.Frame):
                 status = "失败：%s" % doc.error
                 tag = "error"
             elif doc.ready:
-                engine = doc.engine or "pdf"
-                status = "已分析（%s）" % engine
+                status = "已分析（PDF 直读）" if doc.engine == "pdf" else "已分析（%s）" % (doc.engine or "—")
                 tag = "ok"
             else:
                 status = "待分析"
@@ -440,16 +493,45 @@ class CalcTab(ttk.Frame):
                 self.summary_vars[key].set("0")
             for key in ("base", "surcharge", "total"):
                 self.summary_vars[key].set(pricing.format_money(0, digits))
+        else:
+            self.summary_vars["files"].set(str(len(quote.lines)))
+            self.summary_vars["pages"].set(str(quote.pages))
+            self.summary_vars["faces"].set(str(quote.faces))
+            self.summary_vars["sheets"].set(str(quote.sheets))
+            self.summary_vars["base"].set(pricing.format_money(quote.base, digits))
+            self.summary_vars["surcharge"].set(pricing.format_money(quote.surcharge, digits))
+            self.summary_vars["total"].set(pricing.format_money(quote.total, digits))
+        self.update_payment()
+
+    def update_payment(self):
+        quote = self.app.quote
+        digits = int(self.app.cfg.get("pricing", {}).get("round_digits", 2) or 2)
+        paid = self.paid_amount()
+        if quote is None or paid is None:
+            self.summary_vars["discount"].set("—")
+            self.summary_vars["paid"].set("—")
+            self._toggle_payment_rows(False)
+            self.app.paid = None
+            self._refresh_notes()
+            return
+        discount = round(quote.total - paid, digits)
+        self.summary_vars["discount"].set(pricing.format_money(discount, digits))
+        self.summary_vars["paid"].set(pricing.format_money(paid, digits))
+        self._toggle_payment_rows(True)
+        self.app.paid = paid
+        self._refresh_notes()
+
+    def _refresh_notes(self):
+        quote = self.app.quote
+        if quote is None:
             self._set_notes(["请选择有单价的价目行并完成分析。"])
             return
-        self.summary_vars["files"].set(str(len(quote.lines)))
-        self.summary_vars["pages"].set(str(quote.pages))
-        self.summary_vars["faces"].set(str(quote.faces))
-        self.summary_vars["sheets"].set(str(quote.sheets))
-        self.summary_vars["base"].set(pricing.format_money(quote.base, digits))
-        self.summary_vars["surcharge"].set(pricing.format_money(quote.surcharge, digits))
-        self.summary_vars["total"].set(pricing.format_money(quote.total, digits))
-        self._set_notes(quote.notes)
+        notes = list(quote.notes)
+        paid = self.paid_amount()
+        if paid is not None:
+            notes.append("应收合计 %.2f 元" % quote.total)
+            notes.append("实收 %.2f 元，优惠 %.2f 元" % (paid, quote.total - paid))
+        self._set_notes(notes)
 
     def _set_notes(self, lines):
         self.notes_text.configure(state="normal")
@@ -539,7 +621,11 @@ class CalcTab(ttk.Frame):
                 writer.writerow(["实际平均加收系数", "%.3f" % quote.effective_factor])
                 writer.writerow(["基础价", pricing.format_money(quote.base, digits)])
                 writer.writerow(["超标加收", pricing.format_money(quote.surcharge, digits)])
-                writer.writerow(["应付合计", pricing.format_money(quote.total, digits)])
+                writer.writerow(["应收合计", pricing.format_money(quote.total, digits)])
+                paid = self.paid_amount()
+                if paid is not None:
+                    writer.writerow(["优惠", pricing.format_money(quote.total - paid, digits)])
+                    writer.writerow(["实收金额", pricing.format_money(paid, digits)])
 
                 writer.writerow([])
                 writer.writerow(["【各文件汇总】"])

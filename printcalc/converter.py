@@ -244,13 +244,19 @@ def convert_many(paths, out_dir, cfg, progress=None, should_cancel=None):
 
     final = {}
     pending = {}
+    processed = 0
     for src in paths:
-        dst = output_path(src, out_dir)
         ext = os.path.splitext(src)[1].lower()
+        if ext == ".pdf":
+            # 已经是 PDF：直接使用原文件，不做任何转换
+            final[src] = ConvertResult(src=src, pdf_path=src, ok=True, engine="pdf")
+            processed += 1
+            if progress:
+                progress(processed, total, "%s（PDF 直接分析，不转换）" % os.path.basename(src))
+            continue
+        dst = output_path(src, out_dir)
         pending[src] = {"dst": dst, "ext": ext, "order": _engine_order(ext, engine), "idx": 0}
         final[src] = ConvertResult(src=src, pdf_path=dst)
-
-    processed = 0
 
     def report(src, note):
         nonlocal processed

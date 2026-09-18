@@ -27,11 +27,14 @@ class App(tk.Tk):
         self.docs = []
         self.quote = None
         self.current_item = None
+        self.paid = None
         self.temp_dir = default_temp_dir()
 
         self.title("%s  v%s" % (APP_NAME, VERSION))
-        self.geometry("1220x780")
-        self.minsize(1060, 660)
+        width = min(1300, self.winfo_screenwidth() - 60)
+        height = min(940, self.winfo_screenheight() - 90)
+        self.geometry("%dx%d" % (max(width, 1080), max(height, 700)))
+        self.minsize(1080, 700)
         self._setup_style()
 
         self.runner = TaskRunner(self)

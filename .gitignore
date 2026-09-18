@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 本地设置（含本机路径，不入库）
+config.json
+
+# 转换/分析产生的临时文件
+*.log
+build/
+dist/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

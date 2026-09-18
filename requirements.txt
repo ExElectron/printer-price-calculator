@@ -1,0 +1,7 @@
+# PrintCalc 运行依赖
+# Python 3.9+（已在 3.14 上验证）
+pymupdf>=1.24
+numpy>=1.24
+pillow>=10.0
+openpyxl>=3.1
+reportlab>=4.0

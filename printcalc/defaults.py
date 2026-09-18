@@ -9,6 +9,16 @@ DEFAULT_EXCEL_PATH = r"C:\Users\17151\Desktop\打印价格暂定方案和材料�
 DEFAULT_ACROBAT_DIR = r"C:\Program Files\Adobe\Acrobat DC\Acrobat"
 DEFAULT_OFFICE_DIR = r"C:\Program Files\Microsoft Office\root\Office16"
 
+CONFIG_VERSION = 2
+
+# 超标加收阶梯：超出覆盖率上限后，按覆盖率区间分段累进递减。
+# upper = 该档覆盖率的绝对上限（以 A4 满版为 1.0），None 表示不设上限（最后一档）。
+DEFAULT_TIERS = [
+    {"upper": 0.25, "factor": 0.6},
+    {"upper": 0.45, "factor": 0.4},
+    {"upper": None, "factor": 0.2},
+]
+
 SIDES_SINGLE = "单面"
 SIDES_DOUBLE = "双面"
 SIDES_BOTH = "单面/双面"
@@ -134,14 +144,14 @@ DEFAULT_EQUIPMENT = [
 def default_config():
     """返回一份完整的默认配置。"""
     return {
-        "version": 1,
+        "version": CONFIG_VERSION,
         "excel_path": DEFAULT_EXCEL_PATH,
         "pricing": {
-            "overage_factor": 0.6,
             "limit_mode": "per_page",
             "overage_basis": "limit",
             "overage_custom_basis": 0.05,
             "round_digits": 2,
+            "overage_tiers": [dict(t) for t in DEFAULT_TIERS],
         },
         "coverage": {
             "dpi": 300,

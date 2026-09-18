@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from .. import config as cfgmod
-from .. import coverage
+from .. import coverage, pricing
 from .common import PAD, treeview_with_scroll
 
 DOC_COLUMNS = ("文件名", "页数", "平均覆盖率", "总覆盖率")
@@ -46,7 +46,7 @@ class CoverageTab(ttk.Frame):
 
         middle = ttk.LabelFrame(pane, text="页面覆盖率")
         frame2, self.page_tree = treeview_with_scroll(
-            middle, PAGE_COLUMNS, heights=16, widths=(55, 85, 110),
+            middle, PAGE_COLUMNS, heights=16, widths=(55, 85, 140),
             anchors=("center", "e", "w"))
         frame2.pack(fill="both", expand=True, padx=6, pady=6)
         self.page_tree.tag_configure("over", foreground="#c0392b")
@@ -102,6 +102,11 @@ class CoverageTab(ttk.Frame):
     def _docs(self):
         return [d for d in self.app.docs if d.ready]
 
+    def _tiers(self):
+        pricing_cfg = self.app.cfg.get("pricing", {})
+        return pricing.normalize_tiers(pricing_cfg.get("overage_tiers"),
+                                       pricing_cfg.get("overage_factor", 0.6))
+
     def _on_doc_selected(self):
         selection = self.doc_tree.selection()
         docs = self._docs()
@@ -120,9 +125,14 @@ class CoverageTab(ttk.Frame):
             self.canvas.delete("all")
             return
         limit = cfgmod.item_limit(self.app.current_item) if self.app.current_item else None
+        tiers = self._tiers()
         for index, value in enumerate(doc.coverages):
             over = limit is not None and value > limit
-            status = "超出上限" if over else ("未超限" if limit is not None else "无上限")
+            if over:
+                factor = pricing.tier_factor_for(value, limit, tiers)
+                status = "超出上限 ×%.2f" % (factor if factor is not None else 0.0)
+            else:
+                status = "未超限" if limit is not None else "无上限"
             self.page_tree.insert("", "end", iid=str(index), values=(
                 index + 1, "%.3f%%" % (value * 100), status,
             ), tags=("over" if over else "ok",))
@@ -165,7 +175,9 @@ class CoverageTab(ttk.Frame):
         limit = cfgmod.item_limit(self.app.current_item) if self.app.current_item else None
         extra = ""
         if limit is not None and value > limit:
-            extra = "（超出上限 %.1f%%，超出 %.3f）" % (limit * 100, value - limit)
+            factor = pricing.tier_factor_for(value, limit, self._tiers())
+            extra = "（超出上限 %.1f%%，超出 %.3f，适用系数 %.2f）" % (
+                limit * 100, value - limit, factor if factor is not None else 0.0)
         elif limit is not None:
             extra = "（上限内）"
         self.preview_info.set("%s 第 %d 页，墨水覆盖率 %.3f%%%s"

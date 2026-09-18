@@ -12,6 +12,15 @@ from ..defaults import SIDES_DOUBLE, SIDES_SINGLE
 from ..excel_import import ExcelImportError, import_from_excel
 from .common import PAD, ScrollableFrame, center_window
 
+def _fmt_pct(value):
+    if value is None:
+        return "∞"
+    percent = value * 100
+    if abs(percent - round(percent)) < 0.05:
+        return "%d%%" % round(percent)
+    return "%.2f%%" % percent
+
+
 ITEM_COLUMNS = ("纸张介质", "规格", "打印方式", "色彩模式", "面数", "单价(元/张)", "覆盖率上限", "状态", "计费说明")
 ITEM_WIDTHS = (120, 190, 80, 80, 80, 90, 90, 70, 240)
 
@@ -108,6 +117,59 @@ class ItemDialog(tk.Toplevel):
         self.destroy()
 
 
+class TierDialog(tk.Toplevel):
+    def __init__(self, master, tier=None):
+        super().__init__(master)
+        self.title("编辑加收档位" if tier else "新增加收档位")
+        self.resizable(False, False)
+        self.transient(master)
+        self.result = None
+
+        tier = tier or {}
+        upper = tier.get("upper")
+        self.upper_var = tk.StringVar(value="" if upper in (None, "") else str(round(float(upper) * 100, 4)))
+        self.factor_var = tk.StringVar(value=str(tier.get("factor", 0.6)))
+
+        body = ttk.Frame(self, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="覆盖率上限（%）").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Entry(body, textvariable=self.upper_var, width=18).grid(row=0, column=1, sticky="w", pady=4)
+        ttk.Label(body, text="留空表示不设上限（应作为最后一档）", style="Hint.TLabel").grid(
+            row=0, column=2, sticky="w", padx=6)
+        ttk.Label(body, text="加收系数").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(body, textvariable=self.factor_var, width=18).grid(row=1, column=1, sticky="w", pady=4)
+        ttk.Label(body, text="如 0.6 表示按该档覆盖量的 0.6 倍加收", style="Hint.TLabel").grid(
+            row=1, column=2, sticky="w", padx=6)
+
+        buttons = ttk.Frame(self, padding=(12, 0, 12, 12))
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="确定", command=self._ok).pack(side="right")
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right", padx=6)
+        self.bind("<Return>", lambda _e: self._ok())
+        self.bind("<Escape>", lambda _e: self.destroy())
+        center_window(self, 460, 160, master)
+        self.grab_set()
+
+    def _ok(self):
+        upper_text = self.upper_var.get().strip()
+        try:
+            factor = float(self.factor_var.get().strip())
+        except ValueError:
+            messagebox.showwarning("提示", "加收系数必须是数字。", parent=self)
+            return
+        upper = None
+        if upper_text:
+            try:
+                upper = float(upper_text) / 100.0
+            except ValueError:
+                messagebox.showwarning("提示", "覆盖率上限必须是数字。", parent=self)
+                return
+            if upper <= 0:
+                upper = None
+        self.result = {"upper": upper, "factor": factor}
+        self.destroy()
+
+
 class SettingsTab(ttk.Frame):
     def __init__(self, master, app):
         super().__init__(master)
@@ -125,6 +187,7 @@ class SettingsTab(ttk.Frame):
         root.columnconfigure(0, weight=1)
 
         self._build_pricing(root)
+        self._build_tiers(root)
         self._build_items(root)
         self._build_conversion(root)
         self._build_defaults(root)
@@ -148,7 +211,6 @@ class SettingsTab(ttk.Frame):
     def _build_pricing(self, root):
         box = self._section(root, "计价参数", 0)
 
-        self.vars["overage_factor"] = tk.StringVar()
         self.vars["limit_mode"] = tk.StringVar()
         self.vars["overage_basis"] = tk.StringVar()
         self.vars["overage_custom_basis"] = tk.StringVar()
@@ -158,19 +220,45 @@ class SettingsTab(ttk.Frame):
                                 values=list(pricing.MODE_LABELS.values()))
         basis_box = ttk.Combobox(box, textvariable=self.vars["overage_basis"], state="readonly",
                                  values=list(pricing.BASIS_LABELS.values()))
-        self._add_row(box, 0, "超标加收系数", ttk.Entry(box, textvariable=self.vars["overage_factor"]),
-                      "总价 + 超出折算页数 × 单价 × 系数（默认 0.6）")
-        self._add_row(box, 1, "超标判定方式", mode_box)
-        self._add_row(box, 2, "超标覆盖折算基准", basis_box)
-        self._add_row(box, 3, "自定义折算基准（%）",
+        self._add_row(box, 0, "超标判定方式", mode_box)
+        self._add_row(box, 1, "超标覆盖折算基准", basis_box)
+        self._add_row(box, 2, "自定义折算基准（%）",
                       ttk.Entry(box, textvariable=self.vars["overage_custom_basis"]),
                       "选择“自定义折算基准”时生效，如 5 表示按 5% 一页折算")
-        self._add_row(box, 4, "金额小数位", ttk.Entry(box, textvariable=self.vars["round_digits"]))
+        self._add_row(box, 3, "金额小数位", ttk.Entry(box, textvariable=self.vars["round_digits"]))
+
+    def _build_tiers(self, root):
+        box = ttk.LabelFrame(root, text="超标加收阶梯（超出覆盖率上限后，按覆盖率区间分段累进递减）")
+        box.grid(row=1, column=0, sticky="ew", padx=PAD, pady=(PAD, 0))
+        box.columnconfigure(0, weight=1)
+
+        ttk.Label(box, text="第一档从该介质“覆盖率上限”开始；每档上限为覆盖率的绝对百分比，留空表示不设上限（最后一档）。"
+                            "超出量按各档分别乘以对应系数后加收。",
+                  style="Hint.TLabel", wraplength=900, justify="left").grid(
+            row=0, column=0, sticky="w", padx=6, pady=(6, 2))
+
+        from .common import treeview_with_scroll
+        holder = ttk.Frame(box)
+        holder.grid(row=1, column=0, sticky="nsew", padx=6, pady=6)
+        holder.columnconfigure(0, weight=1)
+        frame, self.tier_tree = treeview_with_scroll(
+            holder, ("档位", "覆盖率区间", "加收系数"), heights=5, widths=(70, 260, 110),
+            anchors=("center", "w", "e"))
+        frame.grid(row=0, column=0, sticky="nsew")
+        self.tier_tree.bind("<Double-1>", lambda _e: self.edit_tier())
+
+        buttons = ttk.Frame(box)
+        buttons.grid(row=2, column=0, sticky="w", padx=6, pady=(0, 6))
+        ttk.Button(buttons, text="新增档位", command=self.add_tier).pack(side="left")
+        ttk.Button(buttons, text="编辑", command=self.edit_tier).pack(side="left", padx=4)
+        ttk.Button(buttons, text="删除", command=self.delete_tier).pack(side="left")
+
+        self.tier_rows = []
 
     # ------------------------------------------------------------------
     def _build_items(self, root):
         box = ttk.LabelFrame(root, text="价目表（纸张 / 打印方式 / 色彩 / 面数 / 单价 / 覆盖率上限）")
-        box.grid(row=1, column=0, sticky="ew", padx=PAD, pady=(PAD, 0))
+        box.grid(row=2, column=0, sticky="ew", padx=PAD, pady=(PAD, 0))
         box.columnconfigure(0, weight=1)
 
         holder = ttk.Frame(box)
@@ -195,7 +283,7 @@ class SettingsTab(ttk.Frame):
 
     # ------------------------------------------------------------------
     def _build_conversion(self, root):
-        box = self._section(root, "文档转 PDF", 2)
+        box = self._section(root, "文档转 PDF", 3)
         self.vars["engine"] = tk.StringVar()
         self.vars["acrobat_dir"] = tk.StringVar()
         self.vars["office_dir"] = tk.StringVar()
@@ -235,7 +323,7 @@ class SettingsTab(ttk.Frame):
 
     # ------------------------------------------------------------------
     def _build_defaults(self, root):
-        box = self._section(root, "默认打印选项", 3)
+        box = self._section(root, "默认打印选项", 4)
         self.vars["default_paper"] = tk.StringVar()
         self.vars["default_method"] = tk.StringVar()
         self.vars["default_color"] = tk.StringVar()
@@ -253,7 +341,7 @@ class SettingsTab(ttk.Frame):
 
     # ------------------------------------------------------------------
     def _build_data(self, root):
-        box = self._section(root, "数据来源与备份", 4)
+        box = self._section(root, "数据来源与备份", 5)
         self.vars["excel_path"] = tk.StringVar()
         holder = ttk.Frame(box)
         ttk.Entry(holder, textvariable=self.vars["excel_path"], width=64).pack(side="left")
@@ -269,7 +357,7 @@ class SettingsTab(ttk.Frame):
         buttons.grid(row=1, column=1, sticky="w", padx=6, pady=6)
 
         save_box = ttk.Frame(root)
-        save_box.grid(row=5, column=0, sticky="ew", padx=PAD, pady=PAD)
+        save_box.grid(row=6, column=0, sticky="ew", padx=PAD, pady=PAD)
         self.save_btn = ttk.Button(save_box, text="保存设置并应用", command=self.save_settings)
         self.save_btn.pack(side="right")
         ttk.Button(save_box, text="放弃修改", command=self.load_from_config).pack(side="right", padx=6)
@@ -288,7 +376,8 @@ class SettingsTab(ttk.Frame):
         pr = cfg.get("pricing", {})
         conv = cfg.get("conversion", {})
         defaults = cfg.get("defaults", {})
-        self.vars["overage_factor"].set(str(pr.get("overage_factor", 0.6)))
+        self.tier_rows = pricing.normalize_tiers(pr.get("overage_tiers"))
+        self.refresh_tiers()
         self.vars["limit_mode"].set(pricing.MODE_LABELS.get(pr.get("limit_mode", pricing.MODE_PER_PAGE),
                                                             list(pricing.MODE_LABELS.values())[0]))
         self.vars["overage_basis"].set(pricing.BASIS_LABELS.get(pr.get("overage_basis", pricing.BASIS_LIMIT),
@@ -320,6 +409,70 @@ class SettingsTab(ttk.Frame):
         self.default_combos["default_method"].configure(values=sorted({it["method"] for it in items if it["method"]}))
         self.default_combos["default_color"].configure(values=sorted({it["color"] for it in items if it["color"]}))
         self.default_combos["default_sides"].configure(values=["单面", "双面"])
+
+    # ------------------------------------------------------------------
+    def refresh_tiers(self):
+        self.tier_tree.delete(*self.tier_tree.get_children())
+        lower = None
+        for index, tier in enumerate(self.tier_rows):
+            upper = tier.get("upper")
+            if upper is None:
+                band = "> %s" % _fmt_pct(lower) if lower is not None else "全部超出上限部分"
+            elif lower is None:
+                band = "覆盖率上限 ~ %s" % _fmt_pct(upper)
+            else:
+                band = "%s ~ %s" % (_fmt_pct(lower), _fmt_pct(upper))
+            self.tier_tree.insert("", "end", iid=str(index), values=(
+                index + 1, band, "%.2f" % float(tier.get("factor", 0)),
+            ))
+            lower = upper
+
+    def _selected_tier_index(self):
+        selection = self.tier_tree.selection()
+        if not selection:
+            return None
+        try:
+            return int(selection[0])
+        except (TypeError, ValueError):
+            return None
+
+    def add_tier(self):
+        dialog = TierDialog(self)
+        self.wait_window(dialog)
+        if dialog.result:
+            self.tier_rows.append(dialog.result)
+            self._sort_tiers()
+            self.refresh_tiers()
+            self.tier_tree.selection_set(str(len(self.tier_rows) - 1))
+
+    def edit_tier(self):
+        index = self._selected_tier_index()
+        if index is None:
+            messagebox.showinfo("提示", "请先选择一个档位。")
+            return
+        dialog = TierDialog(self, self.tier_rows[index])
+        self.wait_window(dialog)
+        if dialog.result:
+            self.tier_rows[index] = dialog.result
+            self._sort_tiers()
+            self.refresh_tiers()
+            if self.tier_rows:
+                self.tier_tree.selection_set("0")
+
+    def delete_tier(self):
+        index = self._selected_tier_index()
+        if index is None:
+            messagebox.showinfo("提示", "请先选择一个档位。")
+            return
+        if len(self.tier_rows) <= 1:
+            messagebox.showinfo("提示", "至少保留一个档位。")
+            return
+        self.tier_rows.pop(index)
+        self.refresh_tiers()
+
+    def _sort_tiers(self):
+        normalized = pricing.normalize_tiers(self.tier_rows)
+        self.tier_rows = normalized
 
     # ------------------------------------------------------------------
     def refresh_items(self):
@@ -396,7 +549,6 @@ class SettingsTab(ttk.Frame):
     def _collect(self):
         cfg = self.app.cfg
         try:
-            factor = float(self.vars["overage_factor"].get())
             custom = float(self.vars["overage_custom_basis"].get()) / 100.0
             digits = int(self.vars["round_digits"].get())
             image_dpi = int(self.vars["image_dpi"].get())
@@ -412,11 +564,11 @@ class SettingsTab(ttk.Frame):
         engine = {label: value for value, label in converter.ENGINES}[self.vars["engine"].get()]
 
         cfg["pricing"] = {
-            "overage_factor": factor,
             "limit_mode": mode,
             "overage_basis": basis,
             "overage_custom_basis": custom,
             "round_digits": digits,
+            "overage_tiers": pricing.normalize_tiers(self.tier_rows),
         }
         cfg["coverage"] = {"dpi": dpi}
         cfg["conversion"] = {

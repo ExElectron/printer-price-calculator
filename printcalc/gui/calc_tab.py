@@ -2,6 +2,7 @@
 """计价页。"""
 
 import csv
+import datetime
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -117,11 +118,13 @@ class CalcTab(ttk.Frame):
         self.factor_var = tk.StringVar(value="—")
         for index, (label, var) in enumerate([
             ("规格", self.spec_var), ("单价", self.price_var),
-            ("覆盖率上限", self.limit_var), ("加收系数", self.factor_var),
+            ("覆盖率上限", self.limit_var), ("加收阶梯", self.factor_var),
         ], start=6):
             ttk.Label(box, text=label).grid(row=index, column=0, sticky="w", padx=6, pady=2)
-            ttk.Label(box, textvariable=var, style="Title.TLabel").grid(
-                row=index, column=1, sticky="w", padx=6, pady=2)
+            style = "Tier.TLabel" if label == "加收阶梯" else "Title.TLabel"
+            value_label = ttk.Label(box, textvariable=var, style=style,
+                                    wraplength=180, justify="left")
+            value_label.grid(row=index, column=1, sticky="w", padx=6, pady=2)
         box.columnconfigure(1, weight=1)
 
         self.engine_hint = ttk.Label(parent, text="", style="Hint.TLabel", wraplength=260,
@@ -411,8 +414,10 @@ class CalcTab(ttk.Frame):
             self.spec_var.set(item.get("spec") or "—")
             self.price_var.set("暂不提供" if price is None else "%.2f 元/张" % price)
             self.limit_var.set("不设上限" if limit is None else "%.1f%%" % (limit * 100))
-            factor = float(self.app.cfg.get("pricing", {}).get("overage_factor", 0.6) or 0.6)
-            self.factor_var.set("超限部分 × %.2f" % factor)
+            tiers = pricing.normalize_tiers(
+                self.app.cfg.get("pricing", {}).get("overage_tiers"),
+                self.app.cfg.get("pricing", {}).get("overage_factor", 0.6))
+            self.factor_var.set(pricing.tier_summary(tiers, limit))
 
             ready = [d for d in self.app.docs if d.ready]
             if price is None or not ready:
@@ -491,38 +496,87 @@ class CalcTab(ttk.Frame):
         if not path:
             return
         quote = self.app.quote
-        digits = int(self.app.cfg.get("pricing", {}).get("round_digits", 2) or 2)
+        pricing_cfg = self.app.cfg.get("pricing", {})
+        digits = int(pricing_cfg.get("round_digits", 2) or 2)
+        divisor = pricing.divisor_for(
+            quote.basis, quote.limit,
+            float(pricing_cfg.get("overage_custom_basis", 0.05) or 0.05))
+        limit_text = "不设上限" if quote.limit is None else "%.1f%%" % (quote.limit * 100)
+
+        def pct(value, digits_=2):
+            return "%.*f%%" % (digits_, (value or 0.0) * 100)
+
         try:
             with open(path, "w", encoding="utf-8-sig", newline="") as fh:
                 writer = csv.writer(fh)
                 writer.writerow(["PrintCalc 打印报价单"])
+                writer.writerow(["生成时间", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+                writer.writerow([])
+                writer.writerow(["【打印方案】"])
                 writer.writerow(["纸张介质", quote.item.get("paper", "")])
                 writer.writerow(["规格", quote.item.get("spec", "")])
                 writer.writerow(["打印方式", quote.item.get("method", "")])
                 writer.writerow(["色彩模式", quote.item.get("color", "")])
                 writer.writerow(["打印面数", quote.sides])
+                writer.writerow(["打印份数", quote.copies])
                 writer.writerow(["单价（元/张）", "%.2f" % quote.unit_price])
-                writer.writerow(["覆盖率上限", "不设上限" if quote.limit is None else "%.1f%%" % (quote.limit * 100)])
+                writer.writerow(["覆盖率上限", limit_text])
+                writer.writerow(["超标判定", pricing.MODE_LABELS.get(quote.mode, quote.mode)])
+                writer.writerow(["超标加收阶梯", pricing.tier_summary(quote.tiers, quote.limit)])
+                writer.writerow(["超标覆盖折算基准", pricing.BASIS_LABELS.get(quote.basis, quote.basis)])
+
                 writer.writerow([])
-                writer.writerow(["文件", "页数", "打印面", "张数", "平均覆盖率", "超标覆盖", "基础价", "超标加收", "小计"])
+                writer.writerow(["【报价汇总】"])
+                writer.writerow(["文件数", len(quote.lines)])
+                writer.writerow(["总页数", quote.pages])
+                writer.writerow(["打印面", quote.faces])
+                writer.writerow(["打印张数", quote.sheets])
+                writer.writerow(["总覆盖率", "%.3f" % quote.total_coverage])
+                writer.writerow(["平均覆盖率", pct(quote.avg_coverage)])
+                writer.writerow(["超出覆盖量", "%.4f" % quote.excess_coverage])
+                writer.writerow(["加权覆盖量", "%.4f" % quote.weighted_coverage])
+                writer.writerow(["折算页数", "%.2f" % quote.extra_pages])
+                writer.writerow(["实际平均加收系数", "%.3f" % quote.effective_factor])
+                writer.writerow(["基础价", pricing.format_money(quote.base, digits)])
+                writer.writerow(["超标加收", pricing.format_money(quote.surcharge, digits)])
+                writer.writerow(["应付合计", pricing.format_money(quote.total, digits)])
+
+                writer.writerow([])
+                writer.writerow(["【各文件汇总】"])
+                writer.writerow(["文件", "页数", "打印面", "张数", "平均覆盖率", "最高页覆盖率",
+                                 "超出覆盖量", "折算页数", "实际平均系数", "基础价", "超标加收", "小计"])
                 for line in quote.lines:
                     writer.writerow([
                         line.doc.name, line.pages, line.faces, line.sheets,
-                        "%.2f%%" % (line.avg_coverage * 100),
+                        pct(line.avg_coverage), pct(line.doc.max_coverage),
                         "%.4f" % line.excess_coverage,
+                        "%.2f" % line.extra_pages,
+                        "%.3f" % line.effective_factor,
                         pricing.format_money(line.base, digits),
                         pricing.format_money(line.surcharge, digits),
                         pricing.format_money(line.total, digits),
                     ])
+
                 writer.writerow([])
-                writer.writerow(["合计页数", quote.pages])
-                writer.writerow(["合计张数", quote.sheets])
-                writer.writerow(["基础价", pricing.format_money(quote.base, digits)])
-                writer.writerow(["超标加收", pricing.format_money(quote.surcharge, digits)])
-                writer.writerow(["应付合计", pricing.format_money(quote.total, digits)])
-                writer.writerow(["加收系数", quote.factor])
-                writer.writerow(["超标判定", pricing.MODE_LABELS.get(quote.mode, quote.mode)])
-                writer.writerow(["折算基准", pricing.BASIS_LABELS.get(quote.basis, quote.basis)])
+                writer.writerow(["【覆盖量明细（逐页）】"])
+                if quote.mode == pricing.MODE_AGGREGATE:
+                    writer.writerow(["说明：当前为“整体判定”，下表逐页金额仅供参考，实际按总量结算。"])
+                writer.writerow(["文件", "页码", "覆盖率", "覆盖率上限", "超出量",
+                                 "该页适用系数", "折算页数", "该页加收(元)"])
+                for line in quote.lines:
+                    rows = pricing.page_details(line.doc, quote.limit, quote.tiers,
+                                                divisor, quote.unit_price, quote.copies)
+                    for row in rows:
+                        writer.writerow([
+                            line.doc.name,
+                            row["page"],
+                            pct(row["coverage"], 3),
+                            limit_text,
+                            "%.4f" % row["excess"],
+                            "—" if row["factor"] is None else "%.3f" % row["factor"],
+                            "%.2f" % row["extra_pages"],
+                            pricing.format_money(row["surcharge"], digits),
+                        ])
         except OSError as exc:
             messagebox.showerror("导出失败", str(exc))
             return

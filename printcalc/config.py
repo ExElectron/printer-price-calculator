@@ -30,6 +30,22 @@ def _deep_merge(base, override):
     return base
 
 
+def _migrate(cfg):
+    """把旧版配置升级到当前版本。"""
+    try:
+        version = int(cfg.get("version") or 1)
+    except (TypeError, ValueError):
+        version = 1
+    pricing = cfg.setdefault("pricing", {})
+    if not pricing.get("overage_tiers"):
+        # v1 只有单一系数，升级为分段累进阶梯
+        pricing["overage_tiers"] = copy.deepcopy(D.DEFAULT_TIERS)
+    pricing.pop("overage_factor", None)
+    if version < D.CONFIG_VERSION:
+        cfg["version"] = D.CONFIG_VERSION
+    return cfg
+
+
 def load_config(path=None):
     path = path or config_path()
     cfg = D.default_config()
@@ -43,7 +59,7 @@ def load_config(path=None):
                     cfg["items"] = copy.deepcopy(D.DEFAULT_ITEMS)
         except (OSError, ValueError):
             pass
-    return cfg
+    return _migrate(cfg)
 
 
 def save_config(cfg, path=None):

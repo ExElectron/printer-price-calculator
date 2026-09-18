@@ -88,6 +88,7 @@ class App(tk.Tk):
         style.configure("Treeview.Heading", font=(font[0], 9, "bold"))
         style.configure("Total.TLabel", font=(font[0], 14, "bold"), foreground="#1f6feb")
         style.configure("Title.TLabel", font=(font[0], 11, "bold"))
+        style.configure("Tier.TLabel", font=(font[0], 8), foreground="#333333")
         style.configure("Hint.TLabel", foreground="#666666")
 
     # ------------------------------------------------------------------
